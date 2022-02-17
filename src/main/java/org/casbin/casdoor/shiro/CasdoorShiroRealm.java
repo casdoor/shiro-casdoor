@@ -31,7 +31,6 @@ import org.casbin.casdoor.service.CasdoorAuthService;
  * <p>
  *
  * @author Yixiang Zhao (@seriouszyx)
- * @date 2022-02-16 18:51
  **/
 public class CasdoorShiroRealm extends AuthorizingRealm {
 
