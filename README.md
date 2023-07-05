@@ -2,7 +2,7 @@
 
 [![build](https://github.com/casdoor/shiro-casdoor/actions/workflows/maven-ci.yml/badge.svg)](https://github.com/casdoor/shiro-casdoor/actions/workflows/maven-ci.yml)
 [![License](https://img.shields.io/github/license/casdoor/casdoor-spring-boot-starter.svg?style=flat-square&color=blue)](http://www.apache.org/licenses/LICENSE-2.0.txt)
-[![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/casbin/lobby)
+[![Discord](https://img.shields.io/discord/1022748306096537660?logo=discord&label=discord&color=5865F2)](https://discord.gg/5rPsrAzK7S)
 
 This plugin contains a Shiro Realm for Casdoor which will validate Casdoor JWT access tokens.
 
