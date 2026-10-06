@@ -14,27 +14,38 @@
 
 package org.casbin.casdoor.shiro;
 
-import org.apache.shiro.authc.*;
+import org.apache.shiro.authc.AuthenticationException;
+import org.apache.shiro.authc.AuthenticationInfo;
+import org.apache.shiro.authc.AuthenticationToken;
+import org.apache.shiro.authc.BearerToken;
+import org.apache.shiro.authc.SimpleAuthenticationInfo;
 import org.apache.shiro.authz.AuthorizationInfo;
+import org.apache.shiro.authz.SimpleAuthorizationInfo;
 import org.apache.shiro.realm.AuthorizingRealm;
 import org.apache.shiro.subject.PrincipalCollection;
-import org.apache.shiro.util.Assert;
-import org.casbin.casdoor.config.CasdoorConfig;
-import org.casbin.casdoor.entity.CasdoorUser;
-import org.casbin.casdoor.exception.CasdoorAuthException;
-import org.casbin.casdoor.service.CasdoorAuthService;
+import org.casbin.casdoor.config.Config;
+import org.casbin.casdoor.entity.Permission;
+import org.casbin.casdoor.entity.Role;
+import org.casbin.casdoor.entity.User;
+import org.casbin.casdoor.exception.AuthException;
+import org.casbin.casdoor.service.AuthService;
 
 /**
- * A {@link org.apache.shiro.realm.Realm Realm} implementation that parses and validate Casdoor JWT Access Tokens.
+ * A {@link org.apache.shiro.realm.Realm Realm} that signs in with a Casdoor access token: the token is a JWT,
+ * verified with the certificate of the Casdoor application.
  * <p>
- * <b>NOTE:</b> This realm MUST be use with the Shiro Bearer Token Filter {@code authcBearer}
+ * <b>NOTE:</b> this realm must be used with the Shiro Bearer Token Filter {@code authcBearer}.
  * <p>
+ * The principal is the Casdoor {@link User}. The names of its Casdoor roles become Shiro roles, and its enabled
+ * Casdoor permissions with the "Allow" effect become Shiro permissions {@code <resource>:<action>}, e.g.
+ * {@code /api/foos:read} (Shiro compares permissions case-insensitively). The roles and permissions are only in
+ * the access token when the token format of the Casdoor application is "JWT" (the default).
  *
  * @author Yixiang Zhao (@seriouszyx)
  **/
 public class CasdoorShiroRealm extends AuthorizingRealm {
 
-    private CasdoorAuthService casdoorAuthService;
+    private AuthService authService;
 
     private String endpoint;
 
@@ -42,61 +53,119 @@ public class CasdoorShiroRealm extends AuthorizingRealm {
 
     private String clientSecret;
 
-    private String jwtPublicKey;
+    private String certificate;
 
     private String organizationName;
 
     private String applicationName;
 
+    /**
+     * Creates a realm that is configured with the setters, e.g. in shiro.ini.
+     */
     public CasdoorShiroRealm() {
         setAuthenticationTokenClass(BearerToken.class);
     }
 
-    public CasdoorShiroRealm(String endpoint, String clientId, String clientSecret, String jwtPublicKey, String organizationName, String applicationName) {
+    /**
+     * Creates a realm with the connection settings of a Casdoor application.
+     *
+     * @param endpoint         the URL of the Casdoor server, e.g. https://door.casdoor.com
+     * @param clientId         the client ID of the application
+     * @param clientSecret     the client secret of the application
+     * @param certificate      the certificate (PEM) that verifies the access tokens of the application
+     * @param organizationName the organization of the application
+     * @param applicationName  the name of the application
+     */
+    public CasdoorShiroRealm(String endpoint, String clientId, String clientSecret, String certificate, String organizationName, String applicationName) {
+        this();
         this.endpoint = endpoint;
         this.clientId = clientId;
         this.clientSecret = clientSecret;
-        this.jwtPublicKey = jwtPublicKey;
+        this.certificate = certificate;
         this.organizationName = organizationName;
         this.applicationName = applicationName;
+    }
 
-        setAuthenticationTokenClass(BearerToken.class);
+    /**
+     * Creates a realm with an existing {@link AuthService}, e.g. the bean of casdoor-spring-boot-starter.
+     *
+     * @param authService the service that verifies the access tokens
+     */
+    public CasdoorShiroRealm(AuthService authService) {
+        this();
+        this.authService = authService;
     }
 
     @Override
     protected void onInit() {
         super.onInit();
 
-        Assert.hasText(endpoint, "An endpoint is required for the " + getClass());
-        Assert.hasText(clientId, "A clientId is required for the " + getClass());
-        Assert.hasText(clientSecret, "A clientSecret is required for the " + getClass());
-        Assert.hasText(jwtPublicKey, "A jwtPublicKey is required for the " + getClass());
-        Assert.hasText(organizationName, "A organizationName is required for the " + getClass());
+        if (authService == null) {
+            requireText(endpoint, "endpoint");
+            requireText(clientId, "clientId");
+            requireText(clientSecret, "clientSecret");
+            requireText(certificate, "certificate");
+            requireText(organizationName, "organizationName");
+            authService = new AuthService(new Config(endpoint, clientId, clientSecret, certificate, organizationName, applicationName));
+        }
+    }
 
-        casdoorAuthService = new CasdoorAuthService(
-                new CasdoorConfig(
-                        endpoint,
-                        clientId,
-                        clientSecret,
-                        jwtPublicKey,
-                        organizationName,
-                        applicationName));
+    private void requireText(String value, String name) {
+        if (value == null || value.trim().isEmpty()) {
+            throw new IllegalStateException("The " + name + " (or an AuthService) is required for the " + getClass());
+        }
     }
 
     @Override
     protected AuthenticationInfo doGetAuthenticationInfo(AuthenticationToken authenticationToken) throws AuthenticationException {
         BearerToken token = (BearerToken) authenticationToken;
         try {
-            CasdoorUser user = casdoorAuthService.parseJwtToken(token.getToken());
+            User user = authService.parseJwtToken(token.getToken());
             return new SimpleAuthenticationInfo(user, token.getCredentials(), getName());
-        } catch (CasdoorAuthException e) {
-            throw new AuthenticationException("Could not validate bearer token", e);
+        } catch (AuthException e) {
+            throw new AuthenticationException("Could not validate the Casdoor access token", e);
         }
     }
 
     @Override
-    protected AuthorizationInfo doGetAuthorizationInfo(PrincipalCollection principalCollection) {
-        return null;
+    protected AuthorizationInfo doGetAuthorizationInfo(PrincipalCollection principals) {
+        SimpleAuthorizationInfo info = new SimpleAuthorizationInfo();
+        User user = principals.oneByType(User.class);
+        if (user == null) {
+            return info;
+        }
+
+        if (user.roles != null) {
+            for (Role role : user.roles) {
+                if (role != null && role.name != null) {
+                    info.addRole(role.name);
+                }
+            }
+        }
+
+        if (user.permissions != null) {
+            for (Permission permission : user.permissions) {
+                if (permission == null || !permission.isEnabled || "Deny".equalsIgnoreCase(permission.effect)
+                        || permission.resources == null || permission.actions == null) {
+                    continue;
+                }
+                for (String resource : permission.resources) {
+                    for (String action : permission.actions) {
+                        info.addStringPermission(resource + ":" + action);
+                    }
+                }
+            }
+        }
+
+        return info;
+    }
+
+    public AuthService getAuthService() {
+        return authService;
+    }
+
+    public void setAuthService(AuthService authService) {
+        this.authService = authService;
     }
 
     public String getEndpoint() {
@@ -123,12 +192,12 @@ public class CasdoorShiroRealm extends AuthorizingRealm {
         this.clientSecret = clientSecret;
     }
 
-    public String getJwtPublicKey() {
-        return jwtPublicKey;
+    public String getCertificate() {
+        return certificate;
     }
 
-    public void setJwtPublicKey(String jwtPublicKey) {
-        this.jwtPublicKey = jwtPublicKey;
+    public void setCertificate(String certificate) {
+        this.certificate = certificate;
     }
 
     public String getOrganizationName() {

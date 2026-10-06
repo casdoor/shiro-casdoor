@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Java ${{ matrix.java }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [ 17, 21, 25 ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Test
+        run: mvn -B -ntp verify
+
+      # what publish.yml builds, to find Javadoc errors before releasing
+      - name: Build the release artifacts
+        if: matrix.java == 17
+        run: mvn -B -ntp package -P release -DskipTests -Dgpg.skip
+
+  # tag and release the next version on GitHub, the tag triggers publish.yml
+  # to publish the package to Maven Central
+  release:
+    needs: test
+    if: github.repository == 'casdoor/shiro-casdoor' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Semantic Release
+        run: npx semantic-release@24
+        env:
+          # a personal access token, so that the tag it pushes triggers publish.yml
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
